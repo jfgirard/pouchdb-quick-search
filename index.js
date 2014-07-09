@@ -409,6 +409,8 @@ function applyHighlighting(pouch, opts, rows, fieldBoosts,
   });
 }
 
+// return true if filtered, false otherwise
+// limit the try/catch to its own function to avoid deoptimization
 function isFiltered(doc, filter, db) {
   try {
     return !!(filter && !filter(doc));
