@@ -56,14 +56,10 @@ function getText(fieldBoost, doc) {
 // map function that gets passed to map/reduce
 // emits two types of key/values - one for each token
 // and one for the field-len-norm
-function createMapFunction(fieldBoosts, index, filter) {
+function createMapFunction(fieldBoosts, index, filter, db) {
   return function (doc, emit) {
 
-    try {
-      if (filter && filter.call(null, doc) === false) {
-        return;
-      }
-    } catch (e) {
+    if (isFiltered(doc, filter, db)) {
       return;
     }
 
@@ -151,7 +147,7 @@ exports.search = utils.toPromise(function (opts, callback) {
 
   var persistedIndexName = 'search-' + utils.MD5(JSON.stringify(indexParams));
 
-  var mapFun = createMapFunction(fieldBoosts, index, filter);
+  var mapFun = createMapFunction(fieldBoosts, index, filter, pouch);
 
   var queryOpts = {
     saveAs: persistedIndexName
@@ -411,6 +407,15 @@ function applyHighlighting(pouch, opts, rows, fieldBoosts,
   })).then(function () {
     return rows;
   });
+}
+
+function isFiltered(doc, filter, db) {
+  try {
+    return !!(filter && !filter(doc));
+  } catch (e) {
+    db.emit('error', e);
+    return true;
+  }
 }
 
 /* istanbul ignore next */

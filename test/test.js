@@ -698,17 +698,25 @@ function tests(dbName, dbType) {
       //the filter function will throw an Error for
       //one doc, which filter it out.
 
+      var error;
+
+      //filter function throw an error ?
+      db.on('error', function (err) {
+        error = err;
+      });
+
       return db.bulkDocs({docs: docs}).then(function () {
         var opts = {
           fields: ['title', 'text', 'desc'],
           query: 'court',
-          filter: function (doc) { if (doc._id === '1') { throw new Error(); } }
+          filter: function (doc) { if (doc._id === '1') { throw new Error("oups"); } return true; }
         };
         return db.search(opts);
       }).then(function (res) {
         res.rows.length.should.equal(2);
         var ids = res.rows.map(function (x) { return x.id; });
         ids.should.deep.equal(['2', '3']);
+        error.should.have.property('message', 'oups');
       });
     });
 
