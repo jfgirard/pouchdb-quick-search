@@ -525,41 +525,38 @@ function createHttpView(db, name, language, fieldBoosts, filter) {
 
         //map function
         body.views[name] = {
-          map: function (doc) {
-            var isFiltered = require('views/lib/isFiltered').isFiltered;
-            var filter = require('views/lib/filter').filter;
-            var dumbEmitter = require('views/lib/dumbEmitter').dumbEmitter;
-            if (isFiltered(doc, filter, dumbEmitter)) {
-              return;
-            }
-
-            var TYPE_TOKEN_COUNT = 'a';
-            var TYPE_DOC_INFO = 'b';
-            var docInfo = [];
-            var fieldBoosts = require('views/lib/fieldBoosts').fieldBoosts;
-            var getText = require('views/lib/getText').getText;
-            var getTokenStream = require('views/lib/getTokenStream').getTokenStream;
-            for (var i = 0, len = fieldBoosts.length; i < len; i++) {
-              var fieldBoost = fieldBoosts[i];
-              var text = getText(fieldBoost, doc);
-              var fieldLenNorm;
-              if (text) {
-                var terms = getTokenStream(text);
-                for (var j = 0, jLen = terms.length; j < jLen; j++) {
-                  var term = terms[j];
-                  // avoid emitting the value if there's only one field;
-                  // it takes up unnecessary space on disk
-                  var value = fieldBoosts.length > 1 ? i : undefined;
-                  emit(TYPE_TOKEN_COUNT + term, value);
-                }
-                fieldLenNorm = Math.sqrt(terms.length);
-              } else { // no tokens
-                fieldLenNorm = 0;
-              }
-              docInfo.push(fieldLenNorm);
-            }
-            emit(TYPE_DOC_INFO + doc._id, docInfo);
-          }.toString()
+          map: 'function (doc) {\n' +
+            'var isFiltered = require("views/lib/isFiltered").isFiltered;\n' +
+            'var filter = require("views/lib/filter").filter;\n' +
+            'var dumbEmitter = require("views/lib/dumbEmitter").dumbEmitter;\n' +
+            'if (isFiltered(doc, filter, dumbEmitter)) {\n' +
+            '  return;\n' +
+            '}\n' +
+            'var TYPE_TOKEN_COUNT = "a";\n' +
+            'var TYPE_DOC_INFO = "b";\n' +
+            'var docInfo = [];\n' +
+            'var fieldBoosts = require("views/lib/fieldBoosts").fieldBoosts;\n' +
+            'var getText = require("views/lib/getText").getText;\n' +
+            'var getTokenStream = require("views/lib/getTokenStream").getTokenStream;\n' +
+            'for (var i = 0, len = fieldBoosts.length; i < len; i++) {\n' +
+            '  var fieldBoost = fieldBoosts[i];\n' +
+            '  var text = getText(fieldBoost, doc);\n' +
+            '  var fieldLenNorm;\n' +
+            '  if (text) {\n' +
+            '    var terms = getTokenStream(text);\n' +
+            '    for (var j = 0, jLen = terms.length; j < jLen; j++) {\n' +
+            '      var term = terms[j];\n' +
+            '      var value = fieldBoosts.length > 1 ? i : undefined;\n' +
+            '      emit(TYPE_TOKEN_COUNT + term, value);\n' +
+            '    }\n' +
+            '    fieldLenNorm = Math.sqrt(terms.length);\n' +
+            '  } else { \n' +
+            '    fieldLenNorm = 0;\n' +
+            '  }\n' +
+            '  docInfo.push(fieldLenNorm);\n' +
+            '}\n' +
+            'emit(TYPE_DOC_INFO + doc._id, docInfo);\n' +
+          '}'
         };
 
         //read libs from disk
