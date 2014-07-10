@@ -27,7 +27,7 @@ function add(left, right) {
 // English. Also, this is a private Lunr API, hence why
 // the Lunr version is pegged.
 function getTokenStream(text, index) {
-  return index.pipeline.run(lunr.tokenizer(text));
+  return index.pipeline.run(afterTokenizer(lunr.tokenizer(text)));
 }
 
 // given an object containing the field name and/or
@@ -152,148 +152,185 @@ exports.search = utils.toPromise(function (opts, callback) {
   var queryOpts = {
     saveAs: persistedIndexName
   };
-  if (destroy) {
-    queryOpts.destroy = true;
-    return pouch._search_query(mapFun, queryOpts, callback);
-  } else if (build) {
-    delete queryOpts.stale; // update immediately
-    queryOpts.limit = 0;
-    pouch._search_query(mapFun, queryOpts).then(function () {
-      callback(null, {ok: true});
-    }).catch(callback);
-    return;
-  }
 
-  // it shouldn't matter if the user types the same
-  // token more than once, in fact I think even Lucene does this
-  // special cases like boingo boingo and mother mother are rare
-  var queryTerms = uniq(getTokenStream(q, index));
-  if (!queryTerms.length) {
-    return callback(null, {rows: []});
-  }
-  queryOpts.keys = queryTerms.map(function (queryTerm) {
-    return TYPE_TOKEN_COUNT + queryTerm;
-  });
-
-  if (typeof stale === 'string') {
-    queryOpts.stale = stale;
-  }
-
-  // search algorithm, basically classic TF-IDF
-  //
-  // step 1: get the doc+fields associated with the terms in the query
-  // step 2: get the doc-len-norms of those document fields
-  // step 3: calculate document scores using tf-idf
-  //
-  // note that we follow the Lucene convention (established in
-  // DefaultSimilarity.java) of computing doc-len-norm (in our case, tecnically
-  // field-lennorm) as Math.sqrt(numTerms),
-  // which is an optimization that avoids having to look up every term
-  // in that document and fully recompute its scores based on tf-idf
-  // More info:
-  // https://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/Similarity.html
-  //
-
-  // step 1
-  pouch._search_query(mapFun, queryOpts).then(function (res) {
-
-    if (!res.rows.length) {
-      return callback(null, {rows: []});
-    }
-
-    var docIdsToFieldsToQueryTerms = {};
-    var termDFs = {};
-
-    res.rows.forEach(function (row) {
-      var term = row.key.substring(1);
-      var field = row.value || 0;
-
-      // calculate termDFs
-      if (!(term in termDFs)) {
-        termDFs[term] = 1;
-      } else {
-        termDFs[term]++;
-      }
-
-      // calculate docIdsToFieldsToQueryTerms
-      if (!(row.id in docIdsToFieldsToQueryTerms)) {
-        var arr = docIdsToFieldsToQueryTerms[row.id] = [];
-        for (var i = 0; i < fieldBoosts.length; i++) {
-          arr[i] = {};
-        }
-      }
-
-      var docTerms = docIdsToFieldsToQueryTerms[row.id][field];
-      if (!(term in docTerms)) {
-        docTerms[term] = 1;
-      } else {
-        docTerms[term]++;
-      }
-    });
-
-    // apply the minimum should match (mm)
-    if (queryTerms.length > 1) {
-      Object.keys(docIdsToFieldsToQueryTerms).forEach(function (docId) {
-        var allMatchingTerms = {};
-        var fieldsToQueryTerms = docIdsToFieldsToQueryTerms[docId];
-        Object.keys(fieldsToQueryTerms).forEach(function (field) {
-          Object.keys(fieldsToQueryTerms[field]).forEach(function (term) {
-            allMatchingTerms[term] = true;
-          });
+  if (pouch.type() === 'http') {
+    //Couchdb
+    if (destroy) {
+      return destroyHttpView(pouch, persistedIndexName).then(function () {
+        callback(null, {
+          ok: true
         });
-        var numMatchingTerms = Object.keys(allMatchingTerms).length;
-        var matchingRatio = numMatchingTerms / queryTerms.length;
-        if ((Math.floor(matchingRatio * 100) / 100) < mm) {
-          delete docIdsToFieldsToQueryTerms[docId]; // ignore this doc
-        }
       });
     }
 
-    if (!Object.keys(docIdsToFieldsToQueryTerms).length) {
+    mapFun = persistedIndexName;
+
+    if (build) {
+      delete queryOpts.stale; // update immediately
+      queryOpts.limit = 0;
+    }
+    var viewPromise = createHttpView(pouch, persistedIndexName, language, fieldBoosts, filter);
+    if (build) {
+      viewPromise.then(function () {
+        pouch._search_query(mapFun, queryOpts).then(function () {
+          callback(null, {
+            ok: true
+          });
+        }).catch(callback);
+      });
+    } else {
+      viewPromise.then(query);
+    }
+  } else {
+    // Pouchdb
+    mapFun = createMapFunction(fieldBoosts, index, filter, pouch);
+
+    if (destroy) {
+      queryOpts.destroy = true;
+      return pouch._search_query(mapFun, queryOpts, callback);
+    } else if (build) {
+      delete queryOpts.stale; // update immediately
+      queryOpts.limit = 0;
+      pouch._search_query(mapFun, queryOpts).then(function () {
+        callback(null, {ok: true});
+      }).catch(callback);
+      return;
+    }
+    query();
+  }
+
+  function query() {
+    // it shouldn't matter if the user types the same
+    // token more than once, in fact I think even Lucene does this
+    // special cases like boingo boingo and mother mother are rare
+    var queryTerms = uniq(getTokenStream(q, index));
+    if (!queryTerms.length) {
       return callback(null, {rows: []});
     }
-
-    var keys = Object.keys(docIdsToFieldsToQueryTerms).map(function (docId) {
-      return TYPE_DOC_INFO + docId;
+    queryOpts.keys = queryTerms.map(function (queryTerm) {
+      return TYPE_TOKEN_COUNT + queryTerm;
     });
 
-    var queryOpts = {
-      saveAs: persistedIndexName,
-      keys: keys
-    };
+    if (typeof stale === 'string') {
+      queryOpts.stale = stale;
+    }
 
-    // step 2
-    return pouch._search_query(mapFun, queryOpts).then(function (res) {
+    // search algorithm, basically classic TF-IDF
+    //
+    // step 1: get the doc+fields associated with the terms in the query
+    // step 2: get the doc-len-norms of those document fields
+    // step 3: calculate document scores using tf-idf
+    //
+    // note that we follow the Lucene convention (established in
+    // DefaultSimilarity.java) of computing doc-len-norm (in our case, tecnically
+    // field-lennorm) as Math.sqrt(numTerms),
+    // which is an optimization that avoids having to look up every term
+    // in that document and fully recompute its scores based on tf-idf
+    // More info:
+    // https://lucene.apache.org/core/3_6_0/api/core/org/apache/lucene/search/Similarity.html
+    //
 
-      var docIdsToFieldsToNorms = {};
+    // step 1
+    pouch._search_query(mapFun, queryOpts).then(function (res) {
+
+      if (!res.rows.length) {
+        return callback(null, {rows: []});
+      }
+
+      var docIdsToFieldsToQueryTerms = {};
+      var termDFs = {};
+
       res.rows.forEach(function (row) {
-        docIdsToFieldsToNorms[row.id] = row.value;
-      });
-      // step 3
-      // now we have all information, so calculate scores
-      var rows = calculateDocumentScores(queryTerms, termDFs,
-        docIdsToFieldsToQueryTerms, docIdsToFieldsToNorms, fieldBoosts);
-      return rows;
-    }).then(function (rows) {
-      // filter before fetching docs or applying highlighting
-      // for a slight optimization, since for now we've only fetched ids/scores
-      return (typeof limit === 'number' && limit >= 0) ?
-          rows.slice(skip, skip + limit) : skip > 0 ? rows.slice(skip) : rows;
-    }).then(function (rows) {
-      if (includeDocs) {
-        return applyIncludeDocs(pouch, rows);
-      }
-      return rows;
-    }).then(function (rows) {
-      if (highlighting) {
-        return applyHighlighting(pouch, opts, rows, fieldBoosts, docIdsToFieldsToQueryTerms);
-      }
-      return rows;
+        var term = row.key.substring(1);
+        var field = row.value || 0;
 
-    }).then(function (rows) {
-      callback(null, {rows: rows});
-    });
-  }).catch(callback);
+        // calculate termDFs
+        if (!(term in termDFs)) {
+          termDFs[term] = 1;
+        } else {
+          termDFs[term]++;
+        }
+
+        // calculate docIdsToFieldsToQueryTerms
+        if (!(row.id in docIdsToFieldsToQueryTerms)) {
+          var arr = docIdsToFieldsToQueryTerms[row.id] = [];
+          for (var i = 0; i < fieldBoosts.length; i++) {
+            arr[i] = {};
+          }
+        }
+
+        var docTerms = docIdsToFieldsToQueryTerms[row.id][field];
+        if (!(term in docTerms)) {
+          docTerms[term] = 1;
+        } else {
+          docTerms[term]++;
+        }
+      });
+
+      // apply the minimum should match (mm)
+      if (queryTerms.length > 1) {
+        Object.keys(docIdsToFieldsToQueryTerms).forEach(function (docId) {
+          var allMatchingTerms = {};
+          var fieldsToQueryTerms = docIdsToFieldsToQueryTerms[docId];
+          Object.keys(fieldsToQueryTerms).forEach(function (field) {
+            Object.keys(fieldsToQueryTerms[field]).forEach(function (term) {
+              allMatchingTerms[term] = true;
+            });
+          });
+          var numMatchingTerms = Object.keys(allMatchingTerms).length;
+          var matchingRatio = numMatchingTerms / queryTerms.length;
+          if ((Math.floor(matchingRatio * 100) / 100) < mm) {
+            delete docIdsToFieldsToQueryTerms[docId]; // ignore this doc
+          }
+        });
+      }
+
+      if (!Object.keys(docIdsToFieldsToQueryTerms).length) {
+        return callback(null, {rows: []});
+      }
+
+      var keys = Object.keys(docIdsToFieldsToQueryTerms).map(function (docId) {
+        return TYPE_DOC_INFO + docId;
+      });
+
+      var queryOpts = {
+        saveAs: persistedIndexName,
+        keys: keys
+      };
+
+      // step 2
+      return pouch._search_query(mapFun, queryOpts).then(function (res) {
+
+        var docIdsToFieldsToNorms = {};
+        res.rows.forEach(function (row) {
+          docIdsToFieldsToNorms[row.id] = row.value;
+        });
+        // step 3
+        // now we have all information, so calculate scores
+        var rows = calculateDocumentScores(queryTerms, termDFs,
+          docIdsToFieldsToQueryTerms, docIdsToFieldsToNorms, fieldBoosts);
+        return rows;
+      }).then(function (rows) {
+        // filter before fetching docs or applying highlighting
+        // for a slight optimization, since for now we've only fetched ids/scores
+        return (typeof limit === 'number' && limit >= 0) ?
+            rows.slice(skip, skip + limit) : skip > 0 ? rows.slice(skip) : rows;
+      }).then(function (rows) {
+        if (includeDocs) {
+          return applyIncludeDocs(pouch, rows);
+        }
+        return rows;
+      }).then(function (rows) {
+        if (highlighting) {
+          return applyHighlighting(pouch, opts, rows, fieldBoosts, docIdsToFieldsToQueryTerms);
+        }
+        return rows;
+
+      }).then(function (rows) {
+        callback(null, {rows: rows});
+      });
+    }).catch(callback);
+  }
 });
 
 
@@ -418,6 +455,171 @@ function isFiltered(doc, filter, db) {
     db.emit('error', e);
     return true;
   }
+}
+
+//add the missing split on hypen char
+function afterTokenizer(tokens) {
+  var split;
+  tokens.forEach(function (token) {
+    split = token.split(/-/g);
+    if (split.length > 1) {
+      tokens = tokens.concat(split);
+    }
+  });
+  return tokens;
+}
+
+//create the Couchdb view including the libs
+function createHttpView(db, name, language, fieldBoosts, filter) {
+  return db.request({
+    method: 'GET',
+    url: '_design/' + name
+  }).catch(function (err) {
+    if (err.status === 404) {
+      //the view is missing, let's create it
+      return new Promise(function (resolve, reject) {
+        var body = {
+          language: 'javascript',
+          views: {
+            lib: {
+              fieldBoosts: "var fb = " + JSON.stringify(fieldBoosts) +
+              "; exports.fieldBoosts = fb;",
+              getText: 'exports.getText = ' + getText,
+              afterTokenizer: 'exports.afterTokenizer = ' + afterTokenizer,
+              dumbEmitter: 'exports.dumbEmitter = {emit: function(){}}',
+              isFiltered: 'exports.isFiltered = ' + isFiltered.toString(),
+              filter: 'exports.filter = ' + filter
+            }
+          }
+        };
+
+        //libs stored in couchdb_libs folder
+        var libFiles = [{
+          file: 'lunr.js',
+          saveAs: 'lunr'
+        }];
+        if (language && language !== 'en') {
+          libFiles.push({
+            file: 'stemmerSupport.js',
+            saveAs: 'stemmerSupport',
+            prefix: 'var lunr = require("./lunr");\n'
+          });
+          libFiles.push({
+            file: 'lunr-' + language + '.js',
+            saveAs: 'lunr_lang',
+            prefix: 'var lunr = require("./lunr"); ' +
+            'var stemmerSupport = require("./stemmerSupport");\n'
+          });
+          body.views.lib.getTokenStream = "var lunr = require('./lunr'); " +
+          "require('./lunr_lang'); var index = lunr();  index.use(lunr." +
+            language + "); var afterTokenizer = require('./afterTokenizer').afterTokenizer; " +
+            "exports.getTokenStream = function(text) { " +
+            "return index.pipeline.run(afterTokenizer(lunr.tokenizer(text))); }";
+        } else {
+          body.views.lib.getTokenStream =
+            "var lunr = require('views/lib/lunr'); var index = lunr(); " +
+            "var afterTokenizer = require('./afterTokenizer').afterTokenizer; " +
+            "exports.getTokenStream = " +
+            "function(text) { return index.pipeline.run(afterTokenizer(lunr.tokenizer(text))); }";
+        }
+
+        //map function
+        body.views[name] = {
+          map: function (doc) {
+            var isFiltered = require('views/lib/isFiltered').isFiltered;
+            var filter = require('views/lib/filter').filter;
+            var dumbEmitter = require('views/lib/dumbEmitter').dumbEmitter;
+            if (isFiltered(doc, filter, dumbEmitter)) {
+              return;
+            }
+
+            var TYPE_TOKEN_COUNT = 'a';
+            var TYPE_DOC_INFO = 'b';
+            var docInfo = [];
+            var fieldBoosts = require('views/lib/fieldBoosts').fieldBoosts;
+            var getText = require('views/lib/getText').getText;
+            var getTokenStream = require('views/lib/getTokenStream').getTokenStream;
+            for (var i = 0, len = fieldBoosts.length; i < len; i++) {
+              var fieldBoost = fieldBoosts[i];
+              var text = getText(fieldBoost, doc);
+              var fieldLenNorm;
+              if (text) {
+                var terms = getTokenStream(text);
+                for (var j = 0, jLen = terms.length; j < jLen; j++) {
+                  var term = terms[j];
+                  // avoid emitting the value if there's only one field;
+                  // it takes up unnecessary space on disk
+                  var value = fieldBoosts.length > 1 ? i : undefined;
+                  emit(TYPE_TOKEN_COUNT + term, value);
+                }
+                fieldLenNorm = Math.sqrt(terms.length);
+              } else { // no tokens
+                fieldLenNorm = 0;
+              }
+              docInfo.push(fieldLenNorm);
+            }
+            emit(TYPE_DOC_INFO + doc._id, docInfo);
+          }.toString()
+        };
+
+        //read libs from disk
+        readLibFiles(libFiles, function (err, result) {
+          if (err) {
+            return reject(err);
+          }
+          for (var lib in result) {
+            //append the file content to the view definition
+            body.views.lib[lib] = result[lib];
+          }
+          resolve(body);
+        });
+      }).then(function (body) {
+        //add the design document
+        return db.request({
+          method: 'PUT',
+          url: '_design/' + name,
+          body: body
+        });
+      });
+    } else {
+      throw err;
+    }
+  });
+}
+
+function destroyHttpView(db, name) {
+  var docId = '_design/' + name;
+  return db.get(docId).then(function (doc) {
+    return db.remove(docId, doc._rev);
+  });
+}
+
+function readLibFiles(files, cb) {
+  var fs = require('fs');
+  if (!fs) {
+    return cb({
+      error: "fs is missing"
+    });
+  }
+  var result = {};
+
+  var iterFiles = function (i) {
+    if (i < files.length) {
+      var fileDesc = files[i];
+      fs.readFile(__dirname + '/couchdb_libs/' + fileDesc.file, {
+        encoding: 'utf8'
+      }, function (err, content) {
+        if (err) {
+          return cb(err);
+        }
+        result[fileDesc.saveAs] = fileDesc.prefix ? fileDesc.prefix + content : content;
+        iterFiles(i + 1);
+      });
+    } else {
+      cb(null, result);
+    }
+  };
+  iterFiles(0);
 }
 
 /* istanbul ignore next */
