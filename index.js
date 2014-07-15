@@ -482,17 +482,17 @@ function createHttpView(db, name, language, fieldBoosts, filter) {
 
         //libs stored in couchdb_libs folder
         var libFiles = [{
-          file: 'lunr.js',
+          file: __dirname + '/node_modules/lunr/lunr.min.js',
           saveAs: 'lunr'
         }];
         if (language && language !== 'en') {
           libFiles.push({
-            file: 'stemmerSupport.js',
+            file: __dirname + '/couchdb_libs/stemmerSupport.js',
             saveAs: 'stemmerSupport',
             prefix: 'var lunr = require("./lunr");\n'
           });
           libFiles.push({
-            file: 'lunr-' + language + '.js',
+            file: __dirname + '/couchdb_libs/lunr-' + language + '.js',
             saveAs: 'lunr_lang',
             prefix: 'var lunr = require("./lunr"); ' +
             'var stemmerSupport = require("./stemmerSupport");\n'
@@ -589,7 +589,7 @@ function readLibFiles(files, cb) {
   var iterFiles = function (i) {
     if (i < files.length) {
       var fileDesc = files[i];
-      fs.readFile(__dirname + '/couchdb_libs/' + fileDesc.file, {
+      fs.readFile(fileDesc.file, {
         encoding: 'utf8'
       }, function (err, content) {
         if (err) {

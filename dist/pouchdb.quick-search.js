@@ -28,7 +28,7 @@ function add(left, right) {
 // English. Also, this is a private Lunr API, hence why
 // the Lunr version is pegged.
 function getTokenStream(text, index) {
-  return index.pipeline.run(afterTokenizer(lunr.tokenizer(text)));
+  return index.pipeline.run(lunr.tokenizer(text));
 }
 
 // given an object containing the field name and/or
@@ -458,18 +458,6 @@ function isFiltered(doc, filter, db) {
   }
 }
 
-//add the missing split on hypen char
-function afterTokenizer(tokens) {
-  var split;
-  tokens.forEach(function (token) {
-    split = token.split(/-/g);
-    if (split.length > 1) {
-      tokens = tokens.concat(split);
-    }
-  });
-  return tokens;
-}
-
 //create the Couchdb view including the libs
 function createHttpView(db, name, language, fieldBoosts, filter) {
   return db.request({
@@ -486,7 +474,6 @@ function createHttpView(db, name, language, fieldBoosts, filter) {
               fieldBoosts: "var fb = " + JSON.stringify(fieldBoosts) +
               "; exports.fieldBoosts = fb;",
               getText: 'exports.getText = ' + getText,
-              afterTokenizer: 'exports.afterTokenizer = ' + afterTokenizer,
               dumbEmitter: 'exports.dumbEmitter = {emit: function(){}}',
               isFiltered: 'exports.isFiltered = ' + isFiltered.toString(),
               filter: 'exports.filter = ' + filter
@@ -496,32 +483,31 @@ function createHttpView(db, name, language, fieldBoosts, filter) {
 
         //libs stored in couchdb_libs folder
         var libFiles = [{
-          file: 'lunr.js',
+          file: __dirname + '/node_modules/lunr/lunr.min.js',
           saveAs: 'lunr'
         }];
         if (language && language !== 'en') {
           libFiles.push({
-            file: 'stemmerSupport.js',
+            file: __dirname + '/couchdb_libs/stemmerSupport.js',
             saveAs: 'stemmerSupport',
             prefix: 'var lunr = require("./lunr");\n'
           });
           libFiles.push({
-            file: 'lunr-' + language + '.js',
+            file: __dirname + '/couchdb_libs/lunr-' + language + '.js',
             saveAs: 'lunr_lang',
             prefix: 'var lunr = require("./lunr"); ' +
             'var stemmerSupport = require("./stemmerSupport");\n'
           });
           body.views.lib.getTokenStream = "var lunr = require('./lunr'); " +
           "require('./lunr_lang'); var index = lunr();  index.use(lunr." +
-            language + "); var afterTokenizer = require('./afterTokenizer').afterTokenizer; " +
+            language + "); " +
             "exports.getTokenStream = function(text) { " +
-            "return index.pipeline.run(afterTokenizer(lunr.tokenizer(text))); }";
+            "return index.pipeline.run(lunr.tokenizer(text)); }";
         } else {
           body.views.lib.getTokenStream =
             "var lunr = require('views/lib/lunr'); var index = lunr(); " +
-            "var afterTokenizer = require('./afterTokenizer').afterTokenizer; " +
             "exports.getTokenStream = " +
-            "function(text) { return index.pipeline.run(afterTokenizer(lunr.tokenizer(text))); }";
+            "function(text) { return index.pipeline.run(lunr.tokenizer(text)); }";
         }
 
         //map function
@@ -604,7 +590,7 @@ function readLibFiles(files, cb) {
   var iterFiles = function (i) {
     if (i < files.length) {
       var fileDesc = files[i];
-      fs.readFile(__dirname + '/couchdb_libs/' + fileDesc.file, {
+      fs.readFile(fileDesc.file, {
         encoding: 'utf8'
       }, function (err, content) {
         if (err) {
@@ -1150,7 +1136,7 @@ exports.install = function (t) {
 };
 },{}],24:[function(require,module,exports){
 /**
- * lunr - http://lunrjs.com - A bit like Solr, but much smaller and not as bright - 0.5.3
+ * lunr - http://lunrjs.com - A bit like Solr, but much smaller and not as bright - 0.5.4
  * Copyright (C) 2014 Oliver Nightingale
  * MIT Licensed
  * @license
@@ -1207,7 +1193,7 @@ var lunr = function (config) {
   return idx
 }
 
-lunr.version = "0.5.3"
+lunr.version = "0.5.4"
 /*!
  * lunr.utils
  * Copyright (C) 2014 Oliver Nightingale
@@ -1341,7 +1327,7 @@ lunr.tokenizer = function (obj) {
   }
 
   return str
-    .split(/\s+/)
+    .split(/(?:\s+|\-)/)
     .map(function (token) {
       return token.toLowerCase()
     })
