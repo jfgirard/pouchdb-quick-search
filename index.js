@@ -27,7 +27,7 @@ function add(left, right) {
 // English. Also, this is a private Lunr API, hence why
 // the Lunr version is pegged.
 function getTokenStream(text, index) {
-  return index.pipeline.run(afterTokenizer(lunr.tokenizer(text)));
+  return index.pipeline.run(lunr.tokenizer(text));
 }
 
 // given an object containing the field name and/or
@@ -457,18 +457,6 @@ function isFiltered(doc, filter, db) {
   }
 }
 
-//add the missing split on hypen char
-function afterTokenizer(tokens) {
-  var split;
-  tokens.forEach(function (token) {
-    split = token.split(/-/g);
-    if (split.length > 1) {
-      tokens = tokens.concat(split);
-    }
-  });
-  return tokens;
-}
-
 //create the Couchdb view including the libs
 function createHttpView(db, name, language, fieldBoosts, filter) {
   return db.request({
@@ -485,7 +473,6 @@ function createHttpView(db, name, language, fieldBoosts, filter) {
               fieldBoosts: "var fb = " + JSON.stringify(fieldBoosts) +
               "; exports.fieldBoosts = fb;",
               getText: 'exports.getText = ' + getText,
-              afterTokenizer: 'exports.afterTokenizer = ' + afterTokenizer,
               dumbEmitter: 'exports.dumbEmitter = {emit: function(){}}',
               isFiltered: 'exports.isFiltered = ' + isFiltered.toString(),
               filter: 'exports.filter = ' + filter
@@ -512,15 +499,14 @@ function createHttpView(db, name, language, fieldBoosts, filter) {
           });
           body.views.lib.getTokenStream = "var lunr = require('./lunr'); " +
           "require('./lunr_lang'); var index = lunr();  index.use(lunr." +
-            language + "); var afterTokenizer = require('./afterTokenizer').afterTokenizer; " +
+            language + "); " +
             "exports.getTokenStream = function(text) { " +
-            "return index.pipeline.run(afterTokenizer(lunr.tokenizer(text))); }";
+            "return index.pipeline.run(lunr.tokenizer(text)); }";
         } else {
           body.views.lib.getTokenStream =
             "var lunr = require('views/lib/lunr'); var index = lunr(); " +
-            "var afterTokenizer = require('./afterTokenizer').afterTokenizer; " +
             "exports.getTokenStream = " +
-            "function(text) { return index.pipeline.run(afterTokenizer(lunr.tokenizer(text))); }";
+            "function(text) { return index.pipeline.run(lunr.tokenizer(text)); }";
         }
 
         //map function
