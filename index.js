@@ -91,12 +91,60 @@ function createMapFunction(fieldBoosts, index, filter, db) {
   };
 }
 
+function genPersistedIndexName(opts) {
+  // the index we save as a separate database is uniquely identified
+  // by the fields the user want to index (boost doesn't matter)
+  // plus the tokenizer
+
+  var indexParams = {
+    language: opts.language || 'en',
+    fields: Array.isArray(opts.fields) ? opts.fields : Object.keys(opts.fields)
+  };
+
+  if (opts.filter) {
+    indexParams.filter = opts.filter.toString();
+  }
+  return 'search-' + utils.MD5(JSON.stringify(indexParams));
+}
+
+function toFieldBoosts(fields) {
+  if (Array.isArray(fields)) {
+    var fieldsMap = {};
+    fields.forEach(function (field) {
+      fieldsMap[field] = 1; // default boost
+    });
+    fields = fieldsMap;
+  }
+
+  return Object.keys(fields).map(function (field) {
+    var deepField = field.indexOf('.') !== -1 && field.split('.');
+    return {
+      field: field,
+      deepField: deepField,
+      boost: fields[field]
+    };
+  });
+}
+
 exports.search = utils.toPromise(function (opts, callback) {
+  if (this.type() === 'http') {
+    if (this._searchHttp) {
+      this._searchHttp(opts, callback);
+    } else {
+      callback({
+        error: 'http search not supported'
+      });
+    }
+  } else {
+    this._search(opts, callback);
+  }
+});
+
+exports._search = function (opts, callback) {
   var pouch = this;
   opts = utils.extend(true, {}, opts);
   var q = opts.query || opts.q;
   var mm = 'mm' in opts ? (parseFloat(opts.mm) / 100) : 1; // e.g. '75%'
-  var fields = opts.fields;
   var highlighting = opts.highlighting;
   var includeDocs = opts.include_docs;
   var destroy = opts.destroy;
@@ -107,22 +155,7 @@ exports.search = utils.toPromise(function (opts, callback) {
   var language = opts.language || 'en';
   var filter = opts.filter;
 
-  if (Array.isArray(fields)) {
-    var fieldsMap = {};
-    fields.forEach(function (field) {
-      fieldsMap[field] = 1; // default boost
-    });
-    fields = fieldsMap;
-  }
-
-  var fieldBoosts = Object.keys(fields).map(function (field) {
-    var deepField = field.indexOf('.') !== -1 && field.split('.');
-    return {
-      field: field,
-      deepField: deepField,
-      boost: fields[field]
-    };
-  });
+  var fieldBoosts = toFieldBoosts(opts.fields);
 
   var index = indexes[language];
   if (!index) {
@@ -132,22 +165,15 @@ exports.search = utils.toPromise(function (opts, callback) {
     }
   }
 
-  // the index we save as a separate database is uniquely identified
-  // by the fields the user want to index (boost doesn't matter)
-  // plus the tokenizer
+  var persistedIndexName = genPersistedIndexName(opts);
 
-  var indexParams =  {
-    language: language,
-    fields: fieldBoosts.map(function (x) { return x.field; }).sort(),
-  };
+  var mapFun;
 
-  if (filter) {
-    indexParams.filter = filter.toString();
+  if (pouch.type() === 'http') {
+    mapFun = persistedIndexName;
+  } else {
+    mapFun = createMapFunction(fieldBoosts, index, filter, pouch);
   }
-
-  var persistedIndexName = 'search-' + utils.MD5(JSON.stringify(indexParams));
-
-  var mapFun = createMapFunction(fieldBoosts, index, filter, pouch);
 
   var queryOpts = {
     saveAs: persistedIndexName
@@ -294,7 +320,7 @@ exports.search = utils.toPromise(function (opts, callback) {
       callback(null, {rows: rows});
     });
   }).catch(callback);
-});
+};
 
 
 // returns a sorted list of scored results, like:
@@ -419,6 +445,19 @@ function isFiltered(doc, filter, db) {
     return true;
   }
 }
+
+exports.searchPlugin = function (obj) {
+  Object.keys(obj).forEach(function (id) {
+    exports[id] = obj[id];
+  });
+};
+
+exports.searchPluginSupport = {
+  getText: getText,
+  isFiltered: isFiltered,
+  genPersistedIndexName: genPersistedIndexName,
+  toFieldBoosts: toFieldBoosts
+};
 
 /* istanbul ignore next */
 if (typeof window !== 'undefined' && window.PouchDB) {
